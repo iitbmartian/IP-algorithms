@@ -36,6 +36,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
+
+IMG_SZ = 640
+STRIDE = 32
+AUTO = True
+
 # from cv_bridge import CvBridge
 # from sensor_msgs.msg import Image
 
@@ -51,6 +56,9 @@ from utils.general import (LOGGER, Profile, check_file, check_img_size, check_im
                            increment_path, non_max_suppression, print_args, scale_boxes, strip_optimizer, xyxy2xywh)
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, smart_inference_mode
+from utils.augmentations import (Albumentations, augment_hsv, classify_albumentations, classify_transforms, copy_paste,
+                                 letterbox, mixup, random_perspective)
+
 new_xyxy = np.array([0.0, 0.5, 0.0, 0.0])
 
 @smart_inference_mode()
@@ -98,7 +106,8 @@ def run(
     (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
     # Load model
-    device = select_device(device)
+    # device = select_device(device)
+    device = torch.device("cpu")
     model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
@@ -224,7 +233,187 @@ def run(
     if update:
         strip_optimizer(weights[0])  # update model (to fix SourceChangeWarning)
     
+@smart_inference_mode()
+def run_on_image(
+        weights=ROOT / 'yolov5s.pt',  # model path or triton URL
+        source=ROOT / 'data/images',  # file/dir/URL/glob/screen/0(webcam)
+        data=ROOT / 'data/coco128.yaml',  # dataset.yaml path
+        imgsz=(640, 640),  # inference size (height, width)
+        conf_thres=0.25,  # confidence threshold
+        iou_thres=0.45,  # NMS IOU threshold
+        max_det=1000,  # maximum detections per image
+        device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
+        view_img=False,  # show results
+        save_txt=False,  # save results to *.txt
+        save_conf=False,  # save confidences in --save-txt labels
+        save_crop=False,  # save cropped prediction boxes
+        nosave=False,  # do not save images/videos
+        classes=None,  # filter by class: --class 0, or --class 0 2 3
+        agnostic_nms=False,  # class-agnostic NMS
+        augment=False,  # augmented inference
+        visualize=False,  # visualize features
+        update=False,  # update all models
+        project=ROOT / 'runs/detect',  # save results to project/name
+        name='exp',  # save results to project/name
+        exist_ok=False,  # existing project/name ok, do not increment
+        line_thickness=3,  # bounding box thickness (pixels)
+        hide_labels=False,  # hide labels
+        hide_conf=False,  # hide confidences
+        half=False,  # use FP16 half-precision inference
+        dnn=False,  # use OpenCV DNN for ONNX inference
+        vid_stride=1,  # video frame-rate stride
 
+):
+    # Load model
+    # device = select_device(device)
+    device = torch.device("cpu")
+    model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
+    stride, names, pt = model.stride, model.names, model.pt
+    imgsz = check_img_size(imgsz, s=stride)  # check image size
+
+    # Dataloader
+    bs = 1  # batch_size
+
+    # Run inference
+    model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
+    seen, windows, dt = 0, [], (Profile(), Profile(), Profile())
+
+    im = letterbox(source, IMG_SZ, stride=STRIDE, auto=AUTO)[0]  # padded resize
+    im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+    im = np.ascontiguousarray(im)  # contiguous
+    # for path, im, im0s, vid_cap, s in dataset:
+    im0 = im.copy()
+    with dt[0]:
+        im = torch.from_numpy(im).to(model.device)
+        im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
+        im /= 255  # 0 - 255 to 0.0 - 1.0
+        if len(im.shape) == 3:
+            im = im[None]  # expand for batch dim
+
+    # Inference
+    with dt[1]:
+        visualize = False
+        pred = model(im, augment=augment, visualize=visualize)
+
+    # NMS
+    with dt[2]:
+        pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+
+    conf_arr = []
+    # Process predictions
+    for i, det in enumerate(pred):  # per image
+        seen += 1
+        # s += '%gx%g ' % im.shape[2:]  # print string
+        gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+        imc = im0.copy() if save_crop else im0  # for save_crop
+        annotator = Annotator(im0, line_width=line_thickness, example=str(names))
+        if len(det):
+            # Rescale boxes from img_size to im0 size
+            det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
+
+
+            # Write results
+            for *xyxy, conf, cls in reversed(det):
+                label = f'{conf:.2f}'
+                conf_arr.append(conf)
+                annotator.box_label(xyxy, label, color=colors(0, True)) 
+                global new_xyxy
+                new_xyxy = np.array([xyxy[i].squeeze() for i in range(4)]) 
+
+    #     # Stream results
+    bb_img = annotator.result()    
+    return new_xyxy.copy(), bb_img, conf_arr
+
+class Detector:
+    def __init__(self, 
+            weights=ROOT / 'yolov5s.pt',  # model path or triton URL
+            data=ROOT / 'data/coco128.yaml',  # dataset.yaml path
+            imgsz=(640, 640),  # inference size (height, width)
+            conf_thres=0.25,  # confidence threshold
+            iou_thres=0.45,  # NMS IOU threshold
+            max_det=1000,  # maximum detections per image
+            device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
+            view_img=False,  # show results
+            save_txt=False,  # save results to *.txt
+            save_conf=False,  # save confidences in --save-txt labels
+            save_crop=False,  # save cropped prediction boxes
+            nosave=False,  # do not save images/videos
+            classes=None,  # filter by class: --class 0, or --class 0 2 3
+            agnostic_nms=False,  # class-agnostic NMS
+            augment=False,  # augmented inference
+            visualize=False,  # visualize features
+            update=False,  # update all models
+            project=ROOT / 'runs/detect',  # save results to project/name
+            name='exp',  # save results to project/name
+            exist_ok=False,  # existing project/name ok, do not increment
+            line_thickness=3,  # bounding box thickness (pixels)
+            hide_labels=False,  # hide labels
+            hide_conf=False,  # hide confidences
+            half=False,  # use FP16 half-precision inference
+            dnn=False,  # use OpenCV DNN for ONNX inference
+            vid_stride=1,  # video frame-rate stride) -> None:
+        ):
+        self.device = torch.device("cpu")
+        self.model = DetectMultiBackend(weights, device=self.device, dnn=dnn, data=data, fp16=half)
+        self.stride, self.names, self.pt = self.model.stride, self.model.names, self.model.pt
+        self.imgsz = check_img_size(imgsz, s=self.stride)  # check image size
+        self.conf_thres = conf_thres # confidence threshold
+        self.iou_thres = iou_thres # NMS IOU threshold
+        self.max_det = max_det
+        self.line_thickness = line_thickness
+        self.augment = augment
+        self.agnostic_nms = agnostic_nms
+        # Dataloader
+        self.bs = 1  # batch_size
+        self.classes = classes
+        # Run inference
+        self.model.warmup(imgsz=(1 if self.pt or self.model.triton else self.bs, 3, *imgsz))  # warmup
+        self.seen, self.windows, self.dt = 0, [], (Profile(), Profile(), Profile())
+
+    def run_on_img(self, source):
+        im = letterbox(source, IMG_SZ, stride=STRIDE, auto=AUTO)[0]  # padded resize
+        im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        im = np.ascontiguousarray(im)  # contiguous
+        # for path, im, im0s, vid_cap, s in dataset:
+        im0 = im.copy()
+        with self.dt[0]:
+            im = torch.from_numpy(im).to(self.model.device)
+            im = im.half() if self.model.fp16 else im.float()  # uint8 to fp16/32
+            im /= 255  # 0 - 255 to 0.0 - 1.0
+            if len(im.shape) == 3:
+                im = im[None]  # expand for batch dim
+
+        # Inference
+        with self.dt[1]:
+            visualize = False
+            pred = self.model(im, augment=self.augment, visualize=visualize)
+
+        # NMS
+        with self.dt[2]:
+            pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, self.classes, self.agnostic_nms, max_det=self.max_det)
+
+        conf_arr = []
+        xyxy_arr = []
+        # Process predictions
+        for i, det in enumerate(pred):  # per image
+            annotator = Annotator(im0, line_width=self.line_thickness, example=str(self.names))
+            if len(det):
+                # Rescale boxes from img_size to im0 size
+                det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
+
+
+                # Write results
+                for *xyxy, conf, cls in reversed(det):
+                    label = f'{conf:.2f}'
+                    conf_arr.append(conf)
+                    annotator.box_label(xyxy, label, color=colors(0, True)) 
+                    global new_xyxy
+                    new_xyxy = np.array([xyxy[i].squeeze() for i in range(4)]) 
+                    xyxy_arr.append(new_xyxy.copy())
+
+        #     # Stream results
+        bb_img = annotator.result()    
+        return xyxy_arr.copy(), bb_img, conf_arr     
 
 def parse_opt():
     parser = argparse.ArgumentParser()
@@ -262,18 +451,24 @@ def parse_opt():
     return opt
 
 def detect_cone(source, weights, conf=0.6):
-    run(source = source, weights = weights, conf_thres=conf)
-    print(new_xyxy)
-    return new_xyxy
+    coords, bb_img, confidence = run_on_image(source = source, weights = weights, conf_thres=conf)
+    return coords, bb_img, confidence
 
 
-def main(opt):
+def main(opt, img):
     check_requirements(exclude=('tensorboard', 'thop'))
-    return detect_cone(source = "images/image2.jpeg", weights = "weights/best.pt")
+    return detect_cone(source = img, weights = "weights/best.pt")
     # run(**vars(opt))
 
 
 if __name__ == "__main__":
     opt = parse_opt()
-    main(opt)
+    img = cv2.imread("images/image2.jpeg")
+    det = Detector(weights = "weights/best.pt")
+    coords, bb_img, confidence = det.run_on_img(img)
+    print("Coords :", coords)
+    print("Confidence :", confidence)
+    cv2.imshow("BB img", bb_img)
+    cv2.waitKey(0)
+    
     # print(run('images', 'weights/best.pt'))
