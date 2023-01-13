@@ -1,7 +1,6 @@
 # YOLOv5 🚀 by Ultralytics, GPL-3.0 license
 """
 Run YOLOv5 detection inference on images, videos, directories, globs, YouTube, webcam, streams, etc.
-
 Usage - sources:
     $ python detect.py --weights yolov5s.pt --source 0                               # webcam
                                                      img.jpg                         # image
@@ -13,7 +12,6 @@ Usage - sources:
                                                      'path/*.jpg'                    # glob
                                                      'https://youtu.be/Zgi9g1ksQHc'  # YouTube
                                                      'rtsp://example.com/media.mp4'  # RTSP, RTMP, HTTP stream
-
 Usage - formats:
     $ python detect.py --weights yolov5s.pt                 # PyTorch
                                  yolov5s.torchscript        # TorchScript
@@ -231,6 +229,7 @@ def run(
     if update:
         strip_optimizer(weights[0])  # update model (to fix SourceChangeWarning)
 
+
 class Detector:
     def __init__(self, 
             weights=ROOT / 'yolov5s.pt',  # model path or triton URL
@@ -282,7 +281,9 @@ class Detector:
         im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         im = np.ascontiguousarray(im)  # contiguous
         # for path, im, im0s, vid_cap, s in dataset:
+
         orig_img = source.copy()
+
         im0 = im.copy()
         with self.dt[0]:
             im = torch.from_numpy(im).to(self.model.device)
@@ -364,7 +365,7 @@ def detect_cone(source, weights, conf=0.6):
 def main(opt, img=None):
     check_requirements(exclude=('tensorboard', 'thop'))
     return detect_cone(source = 0, weights = "weights/best.pt")
-    # run(**vars(opt))
+
 
 
 if __name__ == "__main__":
