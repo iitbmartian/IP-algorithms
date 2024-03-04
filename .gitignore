@@ -124,7 +124,8 @@ ENV/
 
 
 **/data/*
-*.pt
 *.plk
 
 *.jpg
+
+*.zip
