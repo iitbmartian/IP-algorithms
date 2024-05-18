@@ -1,0 +1,14 @@
+{
+    "rotation_north": 120,
+    "gps": {
+      "lat": 72.11,
+      "lon": 22,
+      "elevation": 1
+    },
+    "acc_range": {
+      "rotation_north": 0.5,
+      "lat": 0.5,
+      "lon": 0.5,
+      "elevation": 0.5
+    }
+}

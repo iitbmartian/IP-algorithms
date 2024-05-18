@@ -21,6 +21,7 @@ input_video.mov
 *.mp4
 *.png
 *.mov
+*.avi
 
 # keynote stuff
 *.key
@@ -129,3 +130,5 @@ ENV/
 *.jpg
 
 *.zip
+
+*.npy

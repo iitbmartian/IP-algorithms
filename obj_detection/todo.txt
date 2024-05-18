@@ -1,8 +1,0 @@
-# how yolo works
-# what are the parameters in inference
-# if necessary, create our own dataset (how to annotate datasets for yolov8)
-# train yolov8
-# test on bottle.avi and mallet.avi
-# https://universe.roboflow.com/search?q=
-
-# 10th march?
